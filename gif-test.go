@@ -189,19 +189,22 @@ func readDataBlocksAndTrailer(data []byte, idx int) (int, error) {
 	// Read all blocks.
 	imageCount := 0
 	for {
+		// Is it a Special-Purpose Block?
+		//
+		// I'm checking for this first since I added allowing Application Extension
+		// in the Graphic Block.
+		nextIdx, specialPurposeErr := readSpecialPurposeBlock(data, idx)
+		if specialPurposeErr == nil {
+			log.Printf("Read Special-Purpose Block")
+			idx = nextIdx
+			continue
+		}
+
 		// Is it a Graphic Block?
 		nextIdx, graphicErr := readGraphicBlock(data, idx)
 		if graphicErr == nil {
 			log.Printf("Read Graphic Block %d", imageCount)
 			imageCount++
-			idx = nextIdx
-			continue
-		}
-
-		// Is it a Special-Purpose Block?
-		nextIdx, specialPurposeErr := readSpecialPurposeBlock(data, idx)
-		if specialPurposeErr == nil {
-			log.Printf("Read Special-Purpose Block")
 			idx = nextIdx
 			continue
 		}
@@ -219,8 +222,11 @@ func readDataBlocksAndTrailer(data []byte, idx int) (int, error) {
 			log.Printf("next byte: 0x%.2x", data[idx])
 		}
 
-		return -1, fmt.Errorf("unable to read data blocks. Could not parse block as Graphic Block, Special-Purpose Block, or Trailer. (Errors: [%s] [%s] [%s])",
-			graphicErr, specialPurposeErr, trailerErr)
+		log.Printf("Not a Graphic Block because: %s", graphicErr)
+		log.Printf("Not a Special-Purpose Block because: %s", specialPurposeErr)
+		log.Printf("Not a Trailer because: %s", trailerErr)
+
+		return -1, fmt.Errorf("unable to read data blocks. Could not parse block as Graphic Block, Special-Purpose Block, or Trailer")
 	}
 }
 
@@ -228,13 +234,30 @@ func readDataBlocksAndTrailer(data []byte, idx int) (int, error) {
 func readGraphicBlock(data []byte, idx int) (int, error) {
 	// Do we have an extension? It's optional.
 	nextIdx, err := readGraphicControlExtension(data, idx)
+	haveGraphicControlExtension := false
 	if err == nil {
 		log.Printf("Read Graphic Control Extension")
 		idx = nextIdx
+		haveGraphicControlExtension = true
+	}
+
+	// NOTE: Having an application extension here is invalid. However I have seen
+	//   a gif in the wild with Graphic Control Extension, then this - the
+	//   NETSCAPE extension. Even though the NETSCAPE extension spec says it must
+	//   occur elsewhere (after screen descriptor I believe?)
+	ext, nextIdx, err := readApplicationExtension(data, idx)
+	if err == nil {
+		log.Printf("Read Application Extension: %#v", ext)
+		idx = nextIdx
+		return idx, nil
 	}
 
 	nextIdx, err = readGraphicRenderingBlock(data, idx)
 	if err != nil {
+		if haveGraphicControlExtension {
+			return -1, fmt.Errorf("read Graphic Control Extension, but could not read Graphic-Rendering Block: %s Next bytes: 0x%.2x 0x%.2x",
+				err, data[idx], data[idx+1])
+		}
 		return -1, fmt.Errorf("unable to read graphic rendering block: %s", err)
 	}
 	log.Printf("Read Graphic-Rendering Block")
@@ -335,7 +358,10 @@ func readTableBasedImage(data []byte, idx int) (int, error) {
 
 	// Local Colour Table. It is optional.
 	if localColourTableFlag {
-		idx += localColourTableSize
+		actualSize := 3 * int(math.Exp2(float64(localColourTableSize+1)))
+		log.Printf("Local Colour Table is present. Size: %d Actual size: %d",
+			localColourTableSize, actualSize)
+		idx += actualSize
 		log.Printf("Read Local Colour Table")
 	}
 
