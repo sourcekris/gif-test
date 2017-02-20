@@ -10,7 +10,9 @@ import (
 )
 
 func main() {
-	gifPath := "/home/will/t/test.gif"
+	gifPath := "tx.gif"
+	//gifPath = "Z6KoKJ.gif"
+	gifPath = "tumblr_nu2x4whJgy1udf6d3o1_400.gif"
 	fh, err := os.Open(gifPath)
 	if err != nil {
 		log.Fatalf("ReadFile: %s: %s", gifPath, err)
@@ -185,11 +187,13 @@ func readGlobalColourTable(screenDescriptor *logicalScreenDescriptor,
 //                           <Special-Purpose Block>
 func readDataBlocksAndTrailer(data []byte, idx int) (int, error) {
 	// Read all blocks.
+	imageCount := 0
 	for {
 		// Is it a Graphic Block?
 		nextIdx, graphicErr := readGraphicBlock(data, idx)
 		if graphicErr == nil {
-			log.Printf("Read Graphic Block")
+			log.Printf("Read Graphic Block %d", imageCount)
+			imageCount++
 			idx = nextIdx
 			continue
 		}
@@ -207,6 +211,12 @@ func readDataBlocksAndTrailer(data []byte, idx int) (int, error) {
 		if trailerErr == nil {
 			log.Printf("Read Trailer")
 			return nextIdx, nil
+		}
+
+		if idx < len(data) && idx+1 < len(data) {
+			log.Printf("next bytes: 0x%.2x 0x%.2x", data[idx], data[idx+1])
+		} else if idx < len(data) {
+			log.Printf("next byte: 0x%.2x", data[idx])
 		}
 
 		return -1, fmt.Errorf("unable to read data blocks. Could not parse block as Graphic Block, Special-Purpose Block, or Trailer. (Errors: [%s] [%s] [%s])",
@@ -332,27 +342,61 @@ func readTableBasedImage(data []byte, idx int) (int, error) {
 	// Image Data.
 
 	// First byte is LZW Minimum Code Size
+	codeSize := int(data[idx])
 	idx++
 
 	// Then we have Image Data. It is a series of Data Sub-blocks.
-	idx, err := readDataSubBlocks(data, idx)
+	buf, idx, err := readDataSubBlocks(data, idx)
 	if err != nil {
 		return -1, fmt.Errorf("reading data sub blocks: %s", err)
+	}
+	log.Printf("have %d bytes of image data", len(buf))
+
+	// Do we have the End of Information code? Apparently it is not always
+	// present. It is clear code+1.
+
+	clearCode := int(math.Exp2(float64(codeSize)))
+	endOfInfoCode := clearCode + 1
+	log.Printf("code size is %d, end of info code is %d", codeSize, endOfInfoCode)
+
+	if codeSize != 8 {
+		log.Printf("code size is not 8")
+	} else {
+		// XXX: This is incorrect
+
+		if int(buf[len(buf)-1]) == endOfInfoCode {
+			log.Printf("Found end of info code")
+		} else {
+			log.Printf("No end of info code, last byte is %d", buf[len(buf)-1])
+		}
+
+		if int(buf[0]) == clearCode {
+			log.Printf("Stream starts with clear code")
+		} else {
+			log.Printf("Stream does not start with clear code")
+		}
 	}
 
 	return idx, nil
 }
 
-func readDataSubBlocks(data []byte, idx int) (int, error) {
+func readDataSubBlocks(data []byte, idx int) ([]byte, int, error) {
+	buf := []byte{}
+
 	for {
 		sz := int(data[idx])
 		idx++
-		//log.Printf("read sub-block of size %d", sz)
+		log.Printf("read sub-block of size %d", sz)
 
 		if sz == 0 {
-			return idx, nil
+			return buf, idx, nil
 		}
 
+		if sz == 1 {
+			log.Printf("1 byte sub block is %#v", data[idx:idx+1])
+		}
+
+		buf = append(buf, data[idx:idx+sz]...)
 		idx += sz
 	}
 }
@@ -377,7 +421,7 @@ func readPlainTextExtension(data []byte, idx int) (int, error) {
 	idx += 12
 
 	// Then we have Plain Text Data. Data sub-blocks.
-	idx, err := readDataSubBlocks(data, idx)
+	_, idx, err := readDataSubBlocks(data, idx)
 	if err != nil {
 		return -1, fmt.Errorf("reading data sub blocks: %s", err)
 	}
@@ -437,7 +481,7 @@ func readApplicationExtension(data []byte,
 	idx += 3
 
 	// Then we have Application Data. This is a series of data sub-blocks.
-	idx, err := readDataSubBlocks(data, idx)
+	_, idx, err := readDataSubBlocks(data, idx)
 	if err != nil {
 		return nil, -1, fmt.Errorf("reading data sub blocks: %s", err)
 	}
