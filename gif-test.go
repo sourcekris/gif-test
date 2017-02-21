@@ -1,38 +1,46 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"image/gif"
 	"io/ioutil"
-	"log"
 	"math"
 	"os"
 )
 
 func main() {
-	gifPath := "tx.gif"
-	//gifPath = "Z6KoKJ.gif"
-	gifPath = "tumblr_nu2x4whJgy1udf6d3o1_400.gif"
-	fh, err := os.Open(gifPath)
+	gifPath := flag.String("gif", "", "Path to GIF file to open.")
+
+	flag.Parse()
+
+	if len(*gifPath) == 0 {
+		fmt.Println("You must provide a GIF.")
+		os.Exit(1)
+	}
+
+	fh, err := os.Open(*gifPath)
 	if err != nil {
-		log.Fatalf("ReadFile: %s: %s", gifPath, err)
+		fmt.Printf("ReadFile: %s: %s\n", *gifPath, err)
+		os.Exit(1)
 	}
 
 	defer func() {
 		err := fh.Close()
 		if err != nil {
-			log.Printf("fh.Close: %s", err)
+			fmt.Printf("fh.Close: %s\n", err)
 		}
 	}()
 
 	_, err = gif.DecodeAll(fh)
 	if err != nil {
-		log.Printf("gif.DecodeAll: %s", err)
+		fmt.Printf("gif.DecodeAll: %s\n", err)
 	}
 
-	err = decodeGIF(gifPath)
+	err = decodeGIF(*gifPath)
 	if err != nil {
-		log.Printf("decodeGIF: %s", err)
+		fmt.Printf("decodeGIF: %s\n", err)
+		os.Exit(1)
 	}
 }
 
@@ -44,7 +52,7 @@ func decodeGIF(path string) error {
 		return fmt.Errorf("ReadFile: %s: %s", path, err)
 	}
 
-	log.Printf("gif is %d bytes", len(data))
+	fmt.Printf("gif is %d bytes\n", len(data))
 
 	// Grammar is in Appendix B of GIF89a Specification
 
@@ -57,14 +65,14 @@ func decodeGIF(path string) error {
 		return fmt.Errorf("readHeader: %s", err)
 	}
 
-	log.Printf("Header: %#v", header)
+	fmt.Printf("Header: %#v\n", header)
 
 	screenDescriptor, idx, err := readLogicalScreenDescriptor(data, idx)
 	if err != nil {
 		return fmt.Errorf("reading logical screen descriptor: %s", err)
 	}
 
-	log.Printf("Logical Screen Descriptor: %#v", screenDescriptor)
+	fmt.Printf("Logical Screen Descriptor: %#v\n", screenDescriptor)
 
 	if screenDescriptor.HasGlobalColourTable {
 		idx, err = readGlobalColourTable(screenDescriptor, data, idx)
@@ -172,7 +180,7 @@ func readGlobalColourTable(screenDescriptor *logicalScreenDescriptor,
 	data []byte, idx int) (int, error) {
 	// Size is 3*2**(size of global colour table+1)
 	sz := 3 * int(math.Exp2(float64(screenDescriptor.GlobalColourTableSize+1)))
-	log.Printf("global colour table size: %d bytes", sz)
+	fmt.Printf("global colour table size: %d bytes\n", sz)
 
 	idx += sz
 
@@ -195,7 +203,7 @@ func readDataBlocksAndTrailer(data []byte, idx int) (int, error) {
 		// in the Graphic Block.
 		nextIdx, specialPurposeErr := readSpecialPurposeBlock(data, idx)
 		if specialPurposeErr == nil {
-			log.Printf("Read Special-Purpose Block")
+			fmt.Printf("Read Special-Purpose Block\n")
 			idx = nextIdx
 			continue
 		}
@@ -203,7 +211,7 @@ func readDataBlocksAndTrailer(data []byte, idx int) (int, error) {
 		// Is it a Graphic Block?
 		nextIdx, graphicErr := readGraphicBlock(data, idx)
 		if graphicErr == nil {
-			log.Printf("Read Graphic Block %d", imageCount)
+			fmt.Printf("Read Graphic Block %d\n", imageCount)
 			imageCount++
 			idx = nextIdx
 			continue
@@ -212,19 +220,19 @@ func readDataBlocksAndTrailer(data []byte, idx int) (int, error) {
 		// Is it a Trailer?
 		nextIdx, trailerErr := readTrailer(data, idx)
 		if trailerErr == nil {
-			log.Printf("Read Trailer")
+			fmt.Printf("Read Trailer\n")
 			return nextIdx, nil
 		}
 
 		if idx < len(data) && idx+1 < len(data) {
-			log.Printf("next bytes: 0x%.2x 0x%.2x", data[idx], data[idx+1])
+			fmt.Printf("next bytes: 0x%.2x 0x%.2x\n", data[idx], data[idx+1])
 		} else if idx < len(data) {
-			log.Printf("next byte: 0x%.2x", data[idx])
+			fmt.Printf("next byte: 0x%.2x\n", data[idx])
 		}
 
-		log.Printf("Not a Graphic Block because: %s", graphicErr)
-		log.Printf("Not a Special-Purpose Block because: %s", specialPurposeErr)
-		log.Printf("Not a Trailer because: %s", trailerErr)
+		fmt.Printf("Not a Graphic Block because: %s\n", graphicErr)
+		fmt.Printf("Not a Special-Purpose Block because: %s\n", specialPurposeErr)
+		fmt.Printf("Not a Trailer because: %s\n", trailerErr)
 
 		return -1, fmt.Errorf("unable to read data blocks. Could not parse block as Graphic Block, Special-Purpose Block, or Trailer")
 	}
@@ -236,7 +244,7 @@ func readGraphicBlock(data []byte, idx int) (int, error) {
 	nextIdx, err := readGraphicControlExtension(data, idx)
 	haveGraphicControlExtension := false
 	if err == nil {
-		log.Printf("Read Graphic Control Extension")
+		fmt.Printf("Read Graphic Control Extension\n")
 		idx = nextIdx
 		haveGraphicControlExtension = true
 	}
@@ -247,7 +255,7 @@ func readGraphicBlock(data []byte, idx int) (int, error) {
 	//   occur elsewhere (after screen descriptor I believe?)
 	ext, nextIdx, err := readApplicationExtension(data, idx)
 	if err == nil {
-		log.Printf("Read Application Extension: %#v", ext)
+		fmt.Printf("Read Application Extension: %#v\n", ext)
 		idx = nextIdx
 		return idx, nil
 	}
@@ -260,7 +268,7 @@ func readGraphicBlock(data []byte, idx int) (int, error) {
 		}
 		return -1, fmt.Errorf("unable to read graphic rendering block: %s", err)
 	}
-	log.Printf("Read Graphic-Rendering Block")
+	fmt.Printf("Read Graphic-Rendering Block\n")
 	idx = nextIdx
 
 	return idx, nil
@@ -305,13 +313,13 @@ func readGraphicControlExtension(data []byte, idx int) (int, error) {
 func readGraphicRenderingBlock(data []byte, idx int) (int, error) {
 	nextIdx, err := readTableBasedImage(data, idx)
 	if err == nil {
-		log.Printf("Read Table-Based Image")
+		fmt.Printf("Read Table-Based Image\n")
 		return nextIdx, nil
 	}
 
 	nextIdx, err = readPlainTextExtension(data, idx)
 	if err == nil {
-		log.Printf("Read Plain Text Extension")
+		fmt.Printf("Read Plain Text Extension\n")
 		return nextIdx, nil
 	}
 
@@ -359,10 +367,10 @@ func readTableBasedImage(data []byte, idx int) (int, error) {
 	// Local Colour Table. It is optional.
 	if localColourTableFlag {
 		actualSize := 3 * int(math.Exp2(float64(localColourTableSize+1)))
-		log.Printf("Local Colour Table is present. Size: %d Actual size: %d",
+		fmt.Printf("Local Colour Table is present. Size: %d Actual size: %d\n",
 			localColourTableSize, actualSize)
 		idx += actualSize
-		log.Printf("Read Local Colour Table")
+		fmt.Printf("Read Local Colour Table\n")
 	}
 
 	// Image Data.
@@ -376,31 +384,32 @@ func readTableBasedImage(data []byte, idx int) (int, error) {
 	if err != nil {
 		return -1, fmt.Errorf("reading data sub blocks: %s", err)
 	}
-	log.Printf("have %d bytes of image data", len(buf))
+	fmt.Printf("have %d bytes of image data\n", len(buf))
 
 	// Do we have the End of Information code? Apparently it is not always
-	// present. It is clear code+1.
+	// present. It is clear code+1. TODO I think the below is incorrect.
 
 	clearCode := int(math.Exp2(float64(codeSize)))
 	endOfInfoCode := clearCode + 1
-	log.Printf("code size is %d, end of info code is %d", codeSize, endOfInfoCode)
+	fmt.Printf("code size is %d, end of info code is %d\n", codeSize,
+		endOfInfoCode)
 
 	if codeSize != 8 {
-		log.Printf("code size is not 8")
+		fmt.Printf("code size is not 8\n")
 	} else {
-		// XXX: This is incorrect
+		// XXX: This is definitely incorrect
 
-		if int(buf[len(buf)-1]) == endOfInfoCode {
-			log.Printf("Found end of info code")
-		} else {
-			log.Printf("No end of info code, last byte is %d", buf[len(buf)-1])
-		}
+		//if int(buf[len(buf)-1]) == endOfInfoCode {
+		//	fmt.Printf("Found end of info code\n")
+		//} else {
+		//	fmt.Printf("No end of info code, last byte is %d\n", buf[len(buf)-1])
+		//}
 
-		if int(buf[0]) == clearCode {
-			log.Printf("Stream starts with clear code")
-		} else {
-			log.Printf("Stream does not start with clear code")
-		}
+		//if int(buf[0]) == clearCode {
+		//	fmt.Printf("Stream starts with clear code\n")
+		//} else {
+		//	fmt.Printf("Stream does not start with clear code\n")
+		//}
 	}
 
 	return idx, nil
@@ -412,14 +421,14 @@ func readDataSubBlocks(data []byte, idx int) ([]byte, int, error) {
 	for {
 		sz := int(data[idx])
 		idx++
-		log.Printf("read sub-block of size %d", sz)
+		fmt.Printf("read data sub-block of size %d\n", sz)
 
 		if sz == 0 {
 			return buf, idx, nil
 		}
 
 		if sz == 1 {
-			log.Printf("1 byte sub block is %#v", data[idx:idx+1])
+			fmt.Printf("1 byte sub block is %#v\n", data[idx:idx+1])
 		}
 
 		buf = append(buf, data[idx:idx+sz]...)
@@ -459,7 +468,7 @@ func readPlainTextExtension(data []byte, idx int) (int, error) {
 func readSpecialPurposeBlock(data []byte, idx int) (int, error) {
 	ext, nextIdx, err := readApplicationExtension(data, idx)
 	if err == nil {
-		log.Printf("Read Application Extension: %#v", ext)
+		fmt.Printf("Read Application Extension: %#v\n", ext)
 		return nextIdx, nil
 	}
 
