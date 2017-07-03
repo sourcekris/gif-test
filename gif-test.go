@@ -26,19 +26,16 @@ func main() {
 	}
 
 	defer func() {
-		err := fh.Close()
-		if err != nil {
+		if err := fh.Close(); err != nil {
 			fmt.Printf("fh.Close: %s\n", err)
 		}
 	}()
 
-	_, err = gif.DecodeAll(fh)
-	if err != nil {
+	if _, err = gif.DecodeAll(fh); err != nil {
 		fmt.Printf("gif.DecodeAll: %s\n", err)
 	}
 
-	err = decodeGIF(*gifPath)
-	if err != nil {
+	if err := decodeGIF(*gifPath); err != nil {
 		fmt.Printf("decodeGIF: %s\n", err)
 		os.Exit(1)
 	}
