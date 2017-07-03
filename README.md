@@ -6,3 +6,6 @@ It is mainly useful for seeing the blocks and their sizes.
 It does not fully implement the GIF89a specification, and for the most part
 does not parse out all of the blocks it does recognize. It also does not have
 any LZW decompression capability.
+
+Note: If you are working on the standard library `image/gif` package then
+you probably want to build this with `go build -a`.

@@ -208,7 +208,7 @@ func readDataBlocksAndTrailer(data []byte, idx int) (int, error) {
 		// Is it a Graphic Block?
 		nextIdx, graphicErr := readGraphicBlock(data, idx)
 		if graphicErr == nil {
-			fmt.Printf("Read Graphic Block %d\n", imageCount)
+			fmt.Printf("Finished reading Graphic Block (#%d)\n", imageCount)
 			imageCount++
 			idx = nextIdx
 			continue
@@ -221,6 +221,8 @@ func readDataBlocksAndTrailer(data []byte, idx int) (int, error) {
 			return nextIdx, nil
 		}
 
+		fmt.Printf("Currently reading Data* and the next bytes are unrecognized. Must have one of Graphic Block, Special-Purpose Block, or a Trailer.\n")
+
 		if idx < len(data) && idx+1 < len(data) {
 			fmt.Printf("next bytes: 0x%.2x 0x%.2x\n", data[idx], data[idx+1])
 		} else if idx < len(data) {
@@ -231,7 +233,8 @@ func readDataBlocksAndTrailer(data []byte, idx int) (int, error) {
 		fmt.Printf("Not a Special-Purpose Block because: %s\n", specialPurposeErr)
 		fmt.Printf("Not a Trailer because: %s\n", trailerErr)
 
-		return -1, fmt.Errorf("unable to read data blocks. Could not parse block as Graphic Block, Special-Purpose Block, or Trailer")
+		return -1, fmt.Errorf("unable to read data blocks. Could not parse block as Graphic Block, Special-Purpose Block, or Trailer. at index in data %d, total size of data is %d",
+			idx, len(data))
 	}
 }
 
@@ -241,7 +244,7 @@ func readGraphicBlock(data []byte, idx int) (int, error) {
 	nextIdx, err := readGraphicControlExtension(data, idx)
 	haveGraphicControlExtension := false
 	if err == nil {
-		fmt.Printf("Read Graphic Control Extension\n")
+		fmt.Printf("Read a Graphic Control Extension\n")
 		idx = nextIdx
 		haveGraphicControlExtension = true
 	}
@@ -310,7 +313,7 @@ func readGraphicControlExtension(data []byte, idx int) (int, error) {
 func readGraphicRenderingBlock(data []byte, idx int) (int, error) {
 	nextIdx, err := readTableBasedImage(data, idx)
 	if err == nil {
-		fmt.Printf("Read Table-Based Image\n")
+		fmt.Printf("Finished reading a Table-Based Image\n")
 		return nextIdx, nil
 	}
 
@@ -332,6 +335,8 @@ func readTableBasedImage(data []byte, idx int) (int, error) {
 		return -1, fmt.Errorf("no image separator")
 	}
 	idx++
+
+	fmt.Printf("Found Table-Based Image, starting to read it...\n")
 
 	// Next 2 bytes: Image Left Position
 	idx += 2
