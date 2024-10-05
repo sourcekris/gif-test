@@ -4,52 +4,96 @@ import (
 	"flag"
 	"fmt"
 	"image/gif"
-	"io/ioutil"
 	"math"
 	"os"
 )
 
+type ll int
+
+const (
+	debug ll = iota
+	info
+	warn
+	errmsg
+)
+
+type cfg struct {
+	logLevel  ll
+	reprocess bool
+}
+
+type gifstate struct {
+	// validSignature is true when the GIF file signature is correct.
+	validSignature bool
+
+	// readTrailer is true when we've seen a trailer block.
+	readTrailer bool
+
+	// bytesOutstanding is a count of bytes not corresponding to data blocks before the trailer is encountered.
+	bytesOutstanding int
+}
+
+var (
+	conf = new(cfg)
+)
+
+// log emits a log message m depending on message level l and the global logLevel.
+func log(l ll, m string) {
+	if conf.logLevel <= l {
+		fmt.Println(m)
+	}
+}
+
 func main() {
 	gifPath := flag.String("gif", "", "Path to GIF file to open.")
+	alwaysReprocess := flag.Bool("reprocess", false, "Always re-interpret early trailers as Graphic Blocks.")
+	logLevel := flag.Int("l", 2, "Log level, default is 2, the most verbose is 0.")
 
 	flag.Parse()
 
+	conf.reprocess = *alwaysReprocess
+	conf.logLevel = ll(*logLevel)
+
+	// log(errmsg, fmt.Sprintf("log level: %d", conf.logLevel))
+
 	if len(*gifPath) == 0 {
-		fmt.Println("You must provide a GIF.")
+		log(errmsg, "You must provide a GIF file using the -gif flag.")
 		os.Exit(1)
 	}
 
 	fh, err := os.Open(*gifPath)
 	if err != nil {
-		fmt.Printf("ReadFile: %s: %s\n", *gifPath, err)
+		log(errmsg, fmt.Sprintf("Open: %s: %s", *gifPath, err))
 		os.Exit(1)
 	}
 
 	defer func() {
 		if err := fh.Close(); err != nil {
-			fmt.Printf("fh.Close: %s\n", err)
+			log(errmsg, fmt.Sprintf("fh.Close: %s", err))
 		}
 	}()
 
 	if _, err = gif.DecodeAll(fh); err != nil {
-		fmt.Printf("gif.DecodeAll: %s\n", err)
+		log(errmsg, fmt.Sprintf("gif.DecodeAll: %s", err))
 	}
 
-	if err := decodeGIF(*gifPath); err != nil {
-		fmt.Printf("decodeGIF: %s\n", err)
+	gs := new(gifstate)
+
+	if err := decodeGIF(*gifPath, gs); err != nil {
+		log(errmsg, fmt.Sprintf("decodeGIF: %s", err))
 		os.Exit(1)
 	}
 }
 
 // GIF89a specification may be found at
 // https://www.w3.org/Graphics/GIF/spec-gif89a.txt
-func decodeGIF(path string) error {
-	data, err := ioutil.ReadFile(path)
+func decodeGIF(path string, gs *gifstate) error {
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return fmt.Errorf("ReadFile: %s: %s", path, err)
 	}
 
-	fmt.Printf("gif is %d bytes\n", len(data))
+	log(debug, fmt.Sprintf("gif is %d bytes", len(data)))
 
 	// Grammar is in Appendix B of GIF89a Specification
 
@@ -62,30 +106,32 @@ func decodeGIF(path string) error {
 		return fmt.Errorf("readHeader: %s", err)
 	}
 
-	fmt.Printf("Header: %#v\n", header)
+	gs.validSignature = true
+
+	log(info, fmt.Sprintf("Header: %s", header))
 
 	screenDescriptor, idx, err := readLogicalScreenDescriptor(data, idx)
 	if err != nil {
 		return fmt.Errorf("reading logical screen descriptor: %s", err)
 	}
 
-	fmt.Printf("Logical Screen Descriptor: %#v\n", screenDescriptor)
+	log(info, fmt.Sprintf("Logical Screen Descriptor: %#v", screenDescriptor))
 
 	if screenDescriptor.HasGlobalColourTable {
-		idx, err = readGlobalColourTable(screenDescriptor, data, idx)
+		idx, err = readGlobalColourTable(screenDescriptor, idx)
 		if err != nil {
 			return fmt.Errorf("reading global colour table: %s", err)
 		}
 	}
 
-	idx, err = readDataBlocksAndTrailer(data, idx)
+	idx, err = readDataBlocksAndTrailer(data, idx, gs)
 	if err != nil {
 		return fmt.Errorf("reading data blocks: %s", err)
 	}
 
 	// Must be pointing after the end of our data.
 	if idx != len(data) {
-		return fmt.Errorf("failed to parse entire image, at index %d, image size is %d",
+		return fmt.Errorf("failed to parse entire image, at index 0x%x, image size is %d",
 			idx, len(data))
 	}
 
@@ -96,17 +142,20 @@ type header struct {
 	Signature, Version string
 }
 
+func (h *header) String() string {
+	return fmt.Sprintf("Valid GIF header. Signature: %v Version: %v", h.Signature, h.Version)
+}
+
 func readHeader(data []byte, idx int) (*header, int, error) {
 	// Header is 6 bytes.
 
 	// First 3 bytes: "GIF"
 	if data[idx] != 'G' || data[idx+1] != 'I' || data[idx+2] != 'F' {
-		return nil, -1, fmt.Errorf("Header has unknown signature")
+		return nil, -1, fmt.Errorf("Header has unknown signature (missing GIF)")
 	}
 	idx += 3
 
 	// Next 3 bytes: Version. "87a" or "89a"
-
 	if data[idx] == '8' && data[idx+1] == '7' && data[idx+2] == 'a' {
 		return &header{Signature: "GIF", Version: "87a"}, idx + 3, nil
 	}
@@ -115,7 +164,7 @@ func readHeader(data []byte, idx int) (*header, int, error) {
 		return &header{Signature: "GIF", Version: "89a"}, idx + 3, nil
 	}
 
-	return nil, -1, fmt.Errorf("Header has unknown version")
+	return nil, -1, fmt.Errorf("Header has unknown version. Not GIF87a or GIF89a. Check header bytes.")
 }
 
 type logicalScreenDescriptor struct {
@@ -173,11 +222,10 @@ func readLogicalScreenDescriptor(data []byte,
 	return screenDescriptor, idx, nil
 }
 
-func readGlobalColourTable(screenDescriptor *logicalScreenDescriptor,
-	data []byte, idx int) (int, error) {
+func readGlobalColourTable(screenDescriptor *logicalScreenDescriptor, idx int) (int, error) {
 	// Size is 3*2**(size of global colour table+1)
 	sz := 3 * int(math.Exp2(float64(screenDescriptor.GlobalColourTableSize+1)))
-	fmt.Printf("global colour table size: %d bytes\n", sz)
+	log(debug, fmt.Sprintf("global colour table size: %d bytes", sz))
 
 	idx += sz
 
@@ -189,8 +237,9 @@ func readGlobalColourTable(screenDescriptor *logicalScreenDescriptor,
 // When we see Trailer, we're done.
 //
 // <Data> ::=                <Graphic Block>  |
-//                           <Special-Purpose Block>
-func readDataBlocksAndTrailer(data []byte, idx int) (int, error) {
+//
+//	<Special-Purpose Block>
+func readDataBlocksAndTrailer(data []byte, idx int, gs *gifstate) (int, error) {
 	// Read all blocks.
 	imageCount := 0
 	for {
@@ -200,7 +249,7 @@ func readDataBlocksAndTrailer(data []byte, idx int) (int, error) {
 		// in the Graphic Block.
 		nextIdx, specialPurposeErr := readSpecialPurposeBlock(data, idx)
 		if specialPurposeErr == nil {
-			fmt.Printf("Read Special-Purpose Block\n")
+			log(info, "Read Special-Purpose Block")
 			idx = nextIdx
 			continue
 		}
@@ -208,7 +257,7 @@ func readDataBlocksAndTrailer(data []byte, idx int) (int, error) {
 		// Is it a Graphic Block?
 		nextIdx, graphicErr := readGraphicBlock(data, idx)
 		if graphicErr == nil {
-			fmt.Printf("Finished reading Graphic Block (#%d)\n", imageCount)
+			log(info, fmt.Sprintf("Finished reading Graphic Block (#%d)", imageCount))
 			imageCount++
 			idx = nextIdx
 			continue
@@ -217,23 +266,53 @@ func readDataBlocksAndTrailer(data []byte, idx int) (int, error) {
 		// Is it a Trailer?
 		nextIdx, trailerErr := readTrailer(data, idx)
 		if trailerErr == nil {
-			fmt.Printf("Read Trailer\n")
+			gs.readTrailer = true
+
+			trailerMsg := fmt.Sprintf("Read trailer at index 0x%x of data size %d bytes", nextIdx, len(data))
+			if nextIdx < len(data) {
+				gs.bytesOutstanding = len(data) - nextIdx
+				trailerMsg = fmt.Sprintf("%s: There is data (%d bytes) after the trailer indicating there may hidden frames or image data", trailerMsg, gs.bytesOutstanding)
+			} else {
+				gs.bytesOutstanding = 0
+			}
+			log(warn, trailerMsg)
+
+			if gs.bytesOutstanding > 0 {
+				if !conf.reprocess {
+					log(warn, "Attempt to reprocess data after trailer block by passing -reprocess flag.")
+					log(debug, fmt.Sprintf("Byte at idx(0x%x) is: 0x%x, Byte at nextIdx(0x%x) is: 0x%x", idx, data[idx], nextIdx, data[nextIdx]))
+				}
+
+				if conf.reprocess {
+					// Make a copy of the image data changing the trailer byte to a Graphic Block introducer.
+					cd := make([]byte, len(data))
+					copy(cd, data)
+					cd[idx] = 0x21
+
+					i, err := readGraphicBlock(cd, idx)
+					if err == nil {
+						log(warn, fmt.Sprintf("Successfully read a Graphic Block from index 0x%x to 0x%x indicating that trailer byte (0x3B) at 0x%x was fake.", idx, i, idx))
+						data[idx] = 0x21
+						continue
+					}
+				}
+			}
 			return nextIdx, nil
 		}
 
-		fmt.Printf("Currently reading Data* and the next bytes are unrecognized. Must have one of Graphic Block, Special-Purpose Block, or a Trailer.\n")
+		log(info, "Currently reading Data* and the next bytes are unrecognized. Must have one of Graphic Block, Special-Purpose Block, or a Trailer.")
 
 		if idx < len(data) && idx+1 < len(data) {
-			fmt.Printf("next bytes: 0x%.2x 0x%.2x\n", data[idx], data[idx+1])
+			log(debug, fmt.Sprintf("next bytes: 0x%.2x 0x%.2x", data[idx], data[idx+1]))
 		} else if idx < len(data) {
-			fmt.Printf("next byte: 0x%.2x\n", data[idx])
+			log(debug, fmt.Sprintf("next byte: 0x%.2x", data[idx]))
 		}
 
-		fmt.Printf("Not a Graphic Block because: %s\n", graphicErr)
-		fmt.Printf("Not a Special-Purpose Block because: %s\n", specialPurposeErr)
-		fmt.Printf("Not a Trailer because: %s\n", trailerErr)
+		log(info, fmt.Sprintf("Not a Graphic Block because: %s", graphicErr))
+		log(info, fmt.Sprintf("Not a Special-Purpose Block because: %s", specialPurposeErr))
+		log(info, fmt.Sprintf("Not a Trailer because: %s", trailerErr))
 
-		return -1, fmt.Errorf("unable to read data blocks. Could not parse block as Graphic Block, Special-Purpose Block, or Trailer. at index in data %d, total size of data is %d",
+		return -1, fmt.Errorf("unable to read data blocks. Could not parse block as Graphic Block, Special-Purpose Block, or Trailer. at index in data 0x%x, total size of data is %d",
 			idx, len(data))
 	}
 }
@@ -244,7 +323,7 @@ func readGraphicBlock(data []byte, idx int) (int, error) {
 	nextIdx, err := readGraphicControlExtension(data, idx)
 	haveGraphicControlExtension := false
 	if err == nil {
-		fmt.Printf("Read a Graphic Control Extension\n")
+		log(info, "Read a Graphic Control Extension")
 		idx = nextIdx
 		haveGraphicControlExtension = true
 	}
@@ -255,7 +334,7 @@ func readGraphicBlock(data []byte, idx int) (int, error) {
 	//   occur elsewhere (after screen descriptor I believe?)
 	ext, nextIdx, err := readApplicationExtension(data, idx)
 	if err == nil {
-		fmt.Printf("Read Application Extension: %#v\n", ext)
+		log(info, fmt.Sprintf("Read Application Extension: %#v", ext))
 		idx = nextIdx
 		return idx, nil
 	}
@@ -268,7 +347,7 @@ func readGraphicBlock(data []byte, idx int) (int, error) {
 		}
 		return -1, fmt.Errorf("unable to read graphic rendering block: %s", err)
 	}
-	fmt.Printf("Read Graphic-Rendering Block\n")
+	log(info, "Read Graphic-Rendering Block")
 	idx = nextIdx
 
 	return idx, nil
@@ -313,13 +392,13 @@ func readGraphicControlExtension(data []byte, idx int) (int, error) {
 func readGraphicRenderingBlock(data []byte, idx int) (int, error) {
 	nextIdx, err := readTableBasedImage(data, idx)
 	if err == nil {
-		fmt.Printf("Finished reading a Table-Based Image\n")
+		log(info, "Finished reading a Table-Based Image")
 		return nextIdx, nil
 	}
 
 	nextIdx, err = readPlainTextExtension(data, idx)
 	if err == nil {
-		fmt.Printf("Read Plain Text Extension\n")
+		log(info, "Read Plain Text Extension")
 		return nextIdx, nil
 	}
 
@@ -336,7 +415,7 @@ func readTableBasedImage(data []byte, idx int) (int, error) {
 	}
 	idx++
 
-	fmt.Printf("Found Table-Based Image, starting to read it...\n")
+	log(debug, "Found Table-Based Image, starting to read it...")
 
 	// Next 2 bytes: Image Left Position
 	idx += 2
@@ -369,10 +448,9 @@ func readTableBasedImage(data []byte, idx int) (int, error) {
 	// Local Colour Table. It is optional.
 	if localColourTableFlag {
 		actualSize := 3 * int(math.Exp2(float64(localColourTableSize+1)))
-		fmt.Printf("Local Colour Table is present. Size: %d Actual size: %d\n",
-			localColourTableSize, actualSize)
+		log(debug, fmt.Sprintf("Local Colour Table is present. Size: %d Actual size: %d", localColourTableSize, actualSize))
 		idx += actualSize
-		fmt.Printf("Read Local Colour Table\n")
+		log(debug, "Read Local Colour Table")
 	}
 
 	// Image Data.
@@ -386,32 +464,17 @@ func readTableBasedImage(data []byte, idx int) (int, error) {
 	if err != nil {
 		return -1, fmt.Errorf("reading data sub blocks: %s", err)
 	}
-	fmt.Printf("have %d bytes of image data\n", len(buf))
+	log(debug, fmt.Sprintf("have %d bytes of image data", len(buf)))
 
 	// Do we have the End of Information code? Apparently it is not always
 	// present. It is clear code+1. TODO I think the below is incorrect.
 
 	clearCode := int(math.Exp2(float64(codeSize)))
 	endOfInfoCode := clearCode + 1
-	fmt.Printf("code size is %d, end of info code is %d\n", codeSize,
-		endOfInfoCode)
+	log(debug, fmt.Sprintf("code size is %d, end of info code is %d", codeSize, endOfInfoCode))
 
 	if codeSize != 8 {
-		fmt.Printf("code size is not 8\n")
-	} else {
-		// XXX: This is definitely incorrect
-
-		//if int(buf[len(buf)-1]) == endOfInfoCode {
-		//	fmt.Printf("Found end of info code\n")
-		//} else {
-		//	fmt.Printf("No end of info code, last byte is %d\n", buf[len(buf)-1])
-		//}
-
-		//if int(buf[0]) == clearCode {
-		//	fmt.Printf("Stream starts with clear code\n")
-		//} else {
-		//	fmt.Printf("Stream does not start with clear code\n")
-		//}
+		log(debug, "code size is not 8")
 	}
 
 	return idx, nil
@@ -423,14 +486,14 @@ func readDataSubBlocks(data []byte, idx int) ([]byte, int, error) {
 	for {
 		sz := int(data[idx])
 		idx++
-		fmt.Printf("read data sub-block of size %d\n", sz)
+		log(debug, fmt.Sprintf("read data sub-block of size %d", sz))
 
 		if sz == 0 {
 			return buf, idx, nil
 		}
 
 		if sz == 1 {
-			fmt.Printf("1 byte sub block is %#v\n", data[idx:idx+1])
+			log(debug, fmt.Sprintf("1 byte sub block is %#v", data[idx:idx+1]))
 		}
 
 		buf = append(buf, data[idx:idx+sz]...)
@@ -470,7 +533,7 @@ func readPlainTextExtension(data []byte, idx int) (int, error) {
 func readSpecialPurposeBlock(data []byte, idx int) (int, error) {
 	ext, nextIdx, err := readApplicationExtension(data, idx)
 	if err == nil {
-		fmt.Printf("Read Application Extension: %#v\n", ext)
+		log(info, fmt.Sprintf("Read Application Extension: %#v", ext))
 		return nextIdx, nil
 	}
 
