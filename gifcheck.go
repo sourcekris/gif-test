@@ -8,6 +8,11 @@ import (
 	"os"
 )
 
+const (
+	trailer   = 0x3b
+	extension = 0x21
+)
+
 type ll int
 
 const (
@@ -20,6 +25,15 @@ const (
 type cfg struct {
 	logLevel  ll
 	reprocess bool
+	outFile   string
+	write     bool
+}
+
+// patch records a desired change at a desired index.
+type patch struct {
+	index    int
+	oldValue byte
+	newValue byte
 }
 
 type gifstate struct {
@@ -31,6 +45,9 @@ type gifstate struct {
 
 	// bytesOutstanding is a count of bytes not corresponding to data blocks before the trailer is encountered.
 	bytesOutstanding int
+
+	// patches is a slice of patches to apply when writing a fixed file.
+	patches []*patch
 }
 
 var (
@@ -47,6 +64,7 @@ func log(l ll, m string) {
 func main() {
 	gifPath := flag.String("gif", "", "Path to GIF file to open.")
 	alwaysReprocess := flag.Bool("reprocess", false, "Always re-interpret early trailers as Graphic Blocks.")
+	outFile := flag.String("output", "", "File to write patched file to.")
 	logLevel := flag.Int("l", 2, "Log level, default is 2, the most verbose is 0.")
 
 	flag.Parse()
@@ -54,11 +72,14 @@ func main() {
 	conf.reprocess = *alwaysReprocess
 	conf.logLevel = ll(*logLevel)
 
-	// log(errmsg, fmt.Sprintf("log level: %d", conf.logLevel))
-
 	if len(*gifPath) == 0 {
 		log(errmsg, "You must provide a GIF file using the -gif flag.")
 		os.Exit(1)
+	}
+
+	if len(*outFile) != 0 {
+		conf.outFile = *outFile
+		conf.write = true
 	}
 
 	fh, err := os.Open(*gifPath)
@@ -133,6 +154,22 @@ func decodeGIF(path string, gs *gifstate) error {
 	if idx != len(data) {
 		return fmt.Errorf("failed to parse entire image, at index 0x%x, image size is %d",
 			idx, len(data))
+	}
+
+	// Write a patched outfile.
+	if conf.write && len(conf.outFile) > 0 {
+		for _, p := range gs.patches {
+			if data[p.index] == p.oldValue {
+				data[p.index] = p.newValue
+			} else {
+				log(debug, fmt.Sprintf("patching requested at index %d, wanted %x got %x", p.index, p.oldValue, data[p.index]))
+			}
+		}
+
+		err := os.WriteFile(conf.outFile, data, 0644)
+		if err != nil {
+			log(errmsg, fmt.Sprintf("failed writing output file: %v", err))
+		}
 	}
 
 	return nil
@@ -284,15 +321,20 @@ func readDataBlocksAndTrailer(data []byte, idx int, gs *gifstate) (int, error) {
 				}
 
 				if conf.reprocess {
-					// Make a copy of the image data changing the trailer byte to a Graphic Block introducer.
+					// Make a copy of the image data changing the trailer byte to a Extension Block introducer.
 					cd := make([]byte, len(data))
 					copy(cd, data)
-					cd[idx] = 0x21
+					cd[idx] = extension
 
 					i, err := readGraphicBlock(cd, idx)
 					if err == nil {
-						log(warn, fmt.Sprintf("Successfully read a Graphic Block from index 0x%x to 0x%x indicating that trailer byte (0x3B) at 0x%x was fake.", idx, i, idx))
-						data[idx] = 0x21
+						log(warn, fmt.Sprintf("Successfully read an Extension Block from index 0x%x to 0x%x indicating that trailer byte (%x) at 0x%x was fake.", idx, i, trailer, idx))
+						data[idx] = extension
+						gs.patches = append(gs.patches, &patch{
+							index:    idx,
+							newValue: extension,
+							oldValue: trailer,
+						})
 						continue
 					}
 				}
@@ -356,7 +398,7 @@ func readGraphicBlock(data []byte, idx int) (int, error) {
 func readGraphicControlExtension(data []byte, idx int) (int, error) {
 	// We must have Extension Introducer. This says there is an Extension of some
 	// kind.
-	if data[idx] != 0x21 {
+	if data[idx] != extension {
 		return -1, fmt.Errorf("no extension introducer")
 	}
 	idx++
@@ -503,7 +545,7 @@ func readDataSubBlocks(data []byte, idx int) ([]byte, int, error) {
 
 func readPlainTextExtension(data []byte, idx int) (int, error) {
 	// First byte is Extension Introducer. It says there is an extension.
-	if data[idx] != 0x21 {
+	if data[idx] != extension {
 		return -1, fmt.Errorf("no extension introducer")
 	}
 	idx++
@@ -551,7 +593,7 @@ func readApplicationExtension(data []byte,
 	idx int) (*applicationExtension, int, error) {
 	// First byte must be the Extension Introducer, saying this is an extension.
 	// It must be 0x21
-	if data[idx] != 0x21 {
+	if data[idx] != extension {
 		return nil, -1, fmt.Errorf("no extension introducer")
 	}
 	idx++
@@ -590,7 +632,7 @@ func readApplicationExtension(data []byte,
 }
 
 func readTrailer(data []byte, idx int) (int, error) {
-	if data[idx] != 0x3b {
+	if data[idx] != trailer {
 		return -1, fmt.Errorf("not a trailer")
 	}
 	idx++
