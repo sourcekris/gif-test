@@ -22,7 +22,6 @@ Currently supported tests:
 
 Features todo will be tracked in Github issues but vaguely:
 
-- Support writing a corrected GIF file to disk
 - Support validation of other block types (other than just Graphics)
 - Support other validations (to be researched)
 
